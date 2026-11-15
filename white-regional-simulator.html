@@ -139,7 +139,7 @@ function newTournament(){
     mainPool:main, finPool:fin, round:0, phase:"prelim", totalScore:0,
     rounds:[], qualified:null, finalScore:null,
     stats:{asked:0,right:0,wrong:0,dead:0,taken:0,rebounds:0,buzzSum:0,buzzN:0,buckets:{power:0,mid:0,late:0,end:0},topics:{}},
-    cur:null, timer:null, clockTimer:null};
+    qlog:[], cur:null, timer:null, clockTimer:null};
 }
 function drawQuestions(n, pool){ var out=[]; while(out.length<n && pool.length){ out.push(pool.pop()); } return out; }
 function genEvents(totalWords){
@@ -165,6 +165,11 @@ function standings(){
 }
 function myRank(){ var st=standings(); for(var i=0;i<st.length;i++) if(st[i].me) return i+1; return "-"; }
 function fieldSay(msg){ var f=$("fieldLine"); f.textContent = msg; f.classList.remove("hidden"); }
+function logQ(outcome, mine){
+  if(!S || !S.cur) return;
+  var q = S.cur.q;
+  S.qlog.push({stage:(S.phase==="final" ? "Final" : "Prelim "+S.round), n:S.qi+1, id:q.id, topic:q.topic, outcome:outcome, mine:mine||"", answer:q.a, q:q.q});
+}
 function startRound(){
   S.round++;
   var isFinal = (S.phase==="final");
@@ -236,6 +241,7 @@ function resolveRivalEvent(ev){
       var pts = bandPts(ev.depth);
       ev.rival.total += pts;
       S.stats.taken++;
+      logQ("Taken by the field (" + ev.rival.name + " at " + pct + "%)", "");
       fieldSay(ev.rival.name + " got it right (+" + pts + "). Question taken.");
       finishQuestion("<b>Answer:</b> " + cur.q.a + "<br><span class='small'>" + ev.rival.name + " converted it at " + pct + "% - you score 0 on this one.</span>");
     } else {
@@ -307,11 +313,13 @@ function grade(right){
     S.roundRight++;
   } else {
     st.wrong++; pts = -5;
+    var reboundTaken = false;
     var rem = S.cur.events.slice(S.cur.evIdx).filter(function(e){return !e.used});
     if(rem.length){
       var ev = rem[0]; ev.used = true;
       var pct = Math.round(ev.depth*100);
       if(ev.correct){
+        reboundTaken = true;
         var rp = bandPts(ev.depth);
         ev.rival.total += rp; st.rebounds++;
         extra = "<br><span class='small'>Rebound: " + ev.rival.name + " picked it up at " + pct + "% (+" + rp + ").</span>";
@@ -322,6 +330,7 @@ function grade(right){
     }
   }
   S.roundScore += pts;
+  logQ(right ? "Correct" : (reboundTaken ? "Wrong buzz - rebound taken by the field" : "Wrong buzz"), S.cur.typed);
   $("ansBox").innerHTML += extra;
   $("hudScore").textContent = S.totalScore + S.roundScore;
   $("hudRank").textContent = S.phase==="final" ? "-" : myRank();
@@ -340,6 +349,7 @@ function finishQuestion(ansHtml, keepAns){
 }
 function deadQuestion(){
   if(S.cur.done) return;
+  logQ("No answer", "");
   S.stats.asked++; S.stats.dead++;
   var t = S.cur.q.topic; S.stats.topics[t] = S.stats.topics[t] || {a:0,r:0}; S.stats.topics[t].a++;
   finishQuestion("<b>Answer:</b> " + S.cur.q.a + "<br><span class='small'>No conversion - question is dead (0 points).</span>");
@@ -413,9 +423,15 @@ function endTournament(){
   }catch(e){}
   $("againBtn").onclick = function(){ $("reportBox").classList.add("hidden"); $("setup").classList.remove("hidden"); renderHist(); };
   $("csvBtn").onclick = function(){
+    function esc(v){ v = String(v==null?"":v); return /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; }
     var rows = [["stage","score","correct"],["total",S.totalScore,""],["accuracy_pct",acc,""],["avg_buzz_pct",avgBuzz,""],["taken_by_field",S.stats.taken,""],["rebounds_lost",S.stats.rebounds,""]];
     S.rounds.forEach(function(r){ rows.push([(r.phase==="final"?"Final":"Prelim "+r.n), r.score, r.right+"/30"]); });
-    var csv = rows.map(function(r){return r.join(",")}).join("\n");
+    var missed = (S.qlog||[]).filter(function(x){return x.outcome!=="Correct"});
+    rows.push([]);
+    rows.push(["MISSED OR INCORRECT QUESTIONS ("+missed.length+")","","","","","","",""]);
+    rows.push(["stage","q#","id","topic","outcome","your_answer","correct_answer","question"]);
+    missed.forEach(function(x){ rows.push([x.stage, x.n, x.id, x.topic, x.outcome, x.mine, x.answer, x.q]); });
+    var csv = rows.map(function(r){return r.map(esc).join(",")}).join("\n");
     var a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.download = "regional-sim-report.csv"; a.click();
   };
 }
