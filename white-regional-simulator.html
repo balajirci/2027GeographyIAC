@@ -27,6 +27,7 @@ button:disabled{opacity:.45;cursor:default}
 .qbox{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;min-height:170px}
 .qtext{font-size:17px;line-height:1.6}
 .qmeta{color:var(--dim);font-size:12px;margin-bottom:8px}
+.field{margin-top:12px;padding:10px 12px;border-radius:10px;background:#2a2113;border:1px solid var(--gold);font-size:14px;min-height:20px}
 .bar{height:10px;background:var(--card2);border-radius:99px;overflow:hidden;margin:10px 0}
 .bar>i{display:block;height:100%;background:var(--acc);width:0%}
 .bar.clock>i{background:var(--gold)}
@@ -51,7 +52,7 @@ a{color:var(--acc)}
 
 <div id="setup" class="card">
 <div><b>How it runs</b></div>
-<div class="small">Questions read word by word, hardest clues first, exactly like a moderator. Buzz the moment you know it: buzz in the first third for 15 points, middle third 12, late 10. A wrong buzz is -5 and locks you out of that question. If the question finishes unread, you get a short final window to buzz for 10. Type your answer or mark "answered aloud" before the answer is revealed. The rival field is a practice model only; the real cut on Nov 21-22 is the top half of your actual room.</div>
+<div class="small">Questions read word by word, hardest clues first, exactly like a moderator - and the other 11 players in the room are live. Any rival can buzz mid-question: if they are right, the question is gone and you score 0 on it; if they are wrong, they take -5, are locked out, and the reading continues for everyone else. Buzz the moment you know it: first third 15 points, middle third 12, late 10. Your own wrong buzz is -5, and the field then gets a rebound chance on the rest of the question. If nobody converts and the question finishes, you get a short final window to buzz for 10. Type your answer or mark "answered aloud" before the answer is revealed. The rival field is a practice model; the real cut on Nov 21-22 is the top half of your actual room.</div>
 <label>Format</label>
 <select id="fmt">
 <option value="full">Full tournament: 3 prelims + final (if you qualify)</option>
@@ -88,6 +89,7 @@ a{color:var(--acc)}
 <div class="qbox">
 <div class="qmeta" id="qMeta"></div>
 <div class="qtext" id="qText"></div>
+<div id="fieldLine" class="field hidden"></div>
 <div id="ansBox" class="ans hidden"></div>
 </div>
 <div style="margin-top:12px"><button class="buzz" id="buzzBtn">BUZZ (Space)</button></div>
@@ -118,31 +120,49 @@ var KEY = "abhinav-geography-regional-sim-v1";
 var $ = function(id){return document.getElementById(id)};
 function shuffle(a){for(var i=a.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=a[i];a[i]=a[j];a[j]=t}return a}
 function norm(s){return (s||"").toLowerCase().replace(/[^a-z0-9 ]/g," ").replace(/\s+/g," ").trim()}
-var ROOMS = {typical:{mean:52,sd:30,skill:26}, strong:{mean:82,sd:34,skill:30}, champ:{mean:112,sd:38,skill:34}};
-var S = null;
+function clamp(x,lo,hi){return Math.max(lo,Math.min(hi,x))}
+function gauss(){var u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+function bandPts(depth){return depth<=0.33?15:(depth<=0.66?12:10)}
+var ROOMS = {
+  typical:{know:0.38, acc:0.82, depthMean:0.54, depthSd:0.20, skillKnow:0.09, skillDepth:0.10},
+  strong:{know:0.50, acc:0.86, depthMean:0.47, depthSd:0.19, skillKnow:0.10, skillDepth:0.11},
+  champ:{know:0.62, acc:0.90, depthMean:0.41, depthSd:0.17, skillKnow:0.11, skillDepth:0.12}
+};
+var S = null, QID = 0;
 function newTournament(){
-  var room = ROOMS[$("room").value];
+  var cfg = ROOMS[$("room").value];
   var rivals = [];
-  for(var i=0;i<11;i++){ rivals.push({name:"Player "+(i+2), skill:(Math.random()*2-1)*room.skill, total:0, rounds:[]}); }
+  for(var i=0;i<11;i++){ rivals.push({name:"Player "+(i+2), skill:(Math.random()*2-1), total:0}); }
   var main = shuffle(BANK.filter(function(q){return !q.f}));
   var fin  = shuffle(BANK.filter(function(q){return q.f}));
-  return {fmt:$("fmt").value, room:$("room").value, roomCfg:room, rivals:rivals,
-    mainPool:main, finPool:fin, round:0, phase:"prelim", score:0, totalScore:0,
-    rounds:[], qualified:null, finalScore:null, stats:{asked:0,right:0,wrong:0,dead:0,buzzSum:0,buzzN:0,buckets:{power:0,mid:0,late:0,end:0},topics:{}},
+  return {fmt:$("fmt").value, room:$("room").value, cfg:cfg, rivals:rivals,
+    mainPool:main, finPool:fin, round:0, phase:"prelim", totalScore:0,
+    rounds:[], qualified:null, finalScore:null,
+    stats:{asked:0,right:0,wrong:0,dead:0,taken:0,rebounds:0,buzzSum:0,buzzN:0,buckets:{power:0,mid:0,late:0,end:0},topics:{}},
     cur:null, timer:null, clockTimer:null};
 }
 function drawQuestions(n, pool){ var out=[]; while(out.length<n && pool.length){ out.push(pool.pop()); } return out; }
-function rivalRound(r){
-  var cfg = S.roomCfg; var base = cfg.mean + r.skill + (Math.random()*2-1)*cfg.sd;
-  return Math.max(0, Math.round(base/5)*5);
+function genEvents(){
+  var cfg = S.cfg, evs = [];
+  S.rivals.forEach(function(r){
+    var knowP = clamp(cfg.know + r.skill*cfg.skillKnow, 0.03, 0.95);
+    if(Math.random() < knowP){
+      var depth = clamp(cfg.depthMean - r.skill*cfg.skillDepth + gauss()*cfg.depthSd, 0.04, 0.98);
+      var accP = clamp(cfg.acc + r.skill*0.05, 0.4, 0.98);
+      evs.push({rival:r, depth:depth, correct:Math.random() < accP, used:false});
+    }
+  });
+  evs.sort(function(a,b){return a.depth-b.depth});
+  return evs;
 }
 function standings(){
   var rows = S.rivals.map(function(r){return {name:r.name, total:r.total, me:false}});
-  rows.push({name:"Abhinav (you)", total:S.totalScore, me:true});
+  rows.push({name:"Abhinav (you)", total:S.totalScore + (S.roundScore||0), me:true});
   rows.sort(function(a,b){return b.total-a.total});
   return rows;
 }
 function myRank(){ var st=standings(); for(var i=0;i<st.length;i++) if(st[i].me) return i+1; return "-"; }
+function fieldSay(msg){ var f=$("fieldLine"); f.textContent = msg; f.classList.remove("hidden"); }
 function startRound(){
   S.round++;
   var isFinal = (S.phase==="final");
@@ -154,34 +174,80 @@ function startRound(){
   $("play").classList.remove("hidden");
   nextQuestion();
 }
+function stopTimers(){ clearInterval(S.timer); clearInterval(S.clockTimer); S.timer=null; S.clockTimer=null; }
+function startTimers(){
+  stopTimers();
+  var speed = parseInt($("speed").value,10);
+  S.timer = setInterval(function(){
+    if(!S.cur || S.cur.done || S.cur.buzzed) return;
+    var frac = S.cur.words.length ? S.cur.shown/S.cur.words.length : 1;
+    var ev = S.cur.events[S.cur.evIdx];
+    if(ev && frac >= ev.depth){ resolveRivalEvent(ev); return; }
+    if(S.cur.shown < S.cur.words.length){
+      S.cur.shown++;
+      $("qText").textContent = S.cur.words.slice(0,S.cur.shown).join(" ");
+      $("readBar").style.width = (100*S.cur.shown/S.cur.words.length)+"%";
+    } else {
+      clearInterval(S.timer); S.timer=null;
+      S.cur.readDone = true;
+      if(!S.cur.buzzed && !S.cur.done){ finalWindow(); }
+    }
+  }, speed);
+  S.clockTimer = setInterval(function(){
+    if(!S.cur || S.cur.done) return;
+    S.cur.clock -= 0.25;
+    if(S.cur.clock <= 0){ S.cur.clock = 0; clearInterval(S.clockTimer); if(!S.cur.done && !S.cur.buzzed){ deadQuestion(); } }
+    $("hudClock").textContent = Math.ceil(S.cur.clock);
+    $("clockBar").style.width = (100*S.cur.clock/45)+"%";
+  }, 250);
+}
 function nextQuestion(){
   if(S.qi >= S.curSet.length){ endRound(); return; }
   var q = S.curSet[S.qi];
-  S.cur = {q:q, words:q.q.split(/\s+/), shown:0, buzzed:false, locked:false, done:false, depth:0, t0:Date.now(), clock:45};
+  QID++;
+  S.cur = {qid:QID, q:q, words:q.q.split(/\s+/), shown:0, buzzed:false, locked:false, done:false, depth:0, clock:45,
+           events:(S.phase==="final" ? [] : genEvents()), evIdx:0, readDone:false, endWindow:false};
   $("hudRound").textContent = (S.phase==="final" ? "Final" : "Prelim Round "+S.round);
   $("hudQ").textContent = "Question "+(S.qi+1)+" of "+S.curSet.length;
   $("hudScore").textContent = S.totalScore + S.roundScore;
   $("hudRank").textContent = S.phase==="final" ? "-" : myRank();
   $("qMeta").textContent = q.topic + "  ·  " + q.id;
   $("qText").textContent = "";
+  $("fieldLine").classList.add("hidden"); $("fieldLine").textContent = "";
   $("ansBox").classList.add("hidden"); $("entryBox").classList.add("hidden");
   $("gradeBox").classList.add("hidden"); $("nextBox").classList.add("hidden");
   $("ansInput").value = "";
   $("buzzBtn").disabled = false; $("buzzBtn").textContent = "BUZZ (Space)";
   $("readBar").style.width = "0%"; $("clockBar").style.width = "100%"; $("hudClock").textContent = "45";
-  var speed = parseInt($("speed").value,10);
-  clearInterval(S.timer); clearInterval(S.clockTimer);
-  S.timer = setInterval(function(){
-    if(S.cur.shown < S.cur.words.length){
-      S.cur.shown++;
-      $("qText").textContent = S.cur.words.slice(0,S.cur.shown).join(" ");
-      $("readBar").style.width = (100*S.cur.shown/S.cur.words.length)+"%";
+  startTimers();
+}
+function resolveRivalEvent(ev){
+  var cur = S.cur, qid = cur.qid;
+  ev.used = true; S.cur.evIdx++;
+  stopTimers();
+  var pct = Math.round(ev.depth*100);
+  fieldSay(ev.rival.name + " buzzed at " + pct + "% through the question...");
+  setTimeout(function(){
+    if(!S.cur || S.cur.qid !== qid || S.cur.done || S.cur.buzzed) return;
+    if(ev.correct){
+      var pts = bandPts(ev.depth);
+      ev.rival.total += pts;
+      S.stats.taken++;
+      fieldSay(ev.rival.name + " got it right (+" + pts + "). Question taken.");
+      finishQuestion("<b>Answer:</b> " + cur.q.a + "<br><span class='small'>" + ev.rival.name + " converted it at " + pct + "% - you score 0 on this one.</span>");
     } else {
-      clearInterval(S.timer);
-      if(!S.cur.buzzed && !S.cur.done){ finalWindow(); }
+      ev.rival.total -= 5;
+      fieldSay(ev.rival.name + " missed it (-5, locked out). The question continues...");
+      if(cur.readDone){ finalWindow(); startClockOnly(); }
+      else { startTimers(); }
     }
-  }, speed);
+    $("hudRank").textContent = S.phase==="final" ? "-" : myRank();
+  }, 1300);
+}
+function startClockOnly(){
+  clearInterval(S.clockTimer);
   S.clockTimer = setInterval(function(){
+    if(!S.cur || S.cur.done) return;
     S.cur.clock -= 0.25;
     if(S.cur.clock <= 0){ S.cur.clock = 0; clearInterval(S.clockTimer); if(!S.cur.done && !S.cur.buzzed){ deadQuestion(); } }
     $("hudClock").textContent = Math.ceil(S.cur.clock);
@@ -189,15 +255,17 @@ function nextQuestion(){
   }, 250);
 }
 function finalWindow(){
+  if(S.cur.done || S.cur.buzzed) return;
   $("buzzBtn").textContent = "BUZZ NOW - final window (10 pts)";
   S.cur.endWindow = true;
-  setTimeout(function(){ if(!S.cur.buzzed && !S.cur.done){ deadQuestion(); } }, 5000);
+  var qid = S.cur.qid;
+  setTimeout(function(){ if(S.cur && S.cur.qid===qid && !S.cur.buzzed && !S.cur.done){ deadQuestion(); } }, 5000);
 }
 function buzz(){
   if(!S.cur || S.cur.buzzed || S.cur.done) return;
   S.cur.buzzed = true;
   S.cur.depth = S.cur.words.length ? S.cur.shown/S.cur.words.length : 1;
-  clearInterval(S.timer); clearInterval(S.clockTimer);
+  stopTimers();
   $("buzzBtn").disabled = true;
   $("entryBox").classList.remove("hidden");
   $("ansInput").focus();
@@ -222,11 +290,10 @@ function lockAnswer(aloud){
 }
 function grade(right){
   if(S.cur.done) return;
-  S.cur.done = true;
   var q = S.cur.q, st = S.stats;
   st.asked++;
-  var t = S.cur.q.topic; st.topics[t] = st.topics[t] || {a:0,r:0}; st.topics[t].a++;
-  var pts = 0;
+  var t = q.topic; st.topics[t] = st.topics[t] || {a:0,r:0}; st.topics[t].a++;
+  var pts = 0, extra = "";
   if(right){
     st.right++; st.topics[t].r++;
     if(S.cur.endWindow) { pts = 10; st.buckets.end++; }
@@ -237,25 +304,42 @@ function grade(right){
     S.roundRight++;
   } else {
     st.wrong++; pts = -5;
+    var rem = S.cur.events.slice(S.cur.evIdx).filter(function(e){return !e.used});
+    if(rem.length){
+      var ev = rem[0]; ev.used = true;
+      var pct = Math.round(ev.depth*100);
+      if(ev.correct){
+        var rp = bandPts(ev.depth);
+        ev.rival.total += rp; st.rebounds++;
+        extra = "<br><span class='small'>Rebound: " + ev.rival.name + " picked it up at " + pct + "% (+" + rp + ").</span>";
+      } else {
+        ev.rival.total -= 5;
+        extra = "<br><span class='small'>Rebound try: " + ev.rival.name + " also missed it (-5).</span>";
+      }
+    }
   }
   S.roundScore += pts;
+  $("ansBox").innerHTML += extra;
   $("hudScore").textContent = S.totalScore + S.roundScore;
+  $("hudRank").textContent = S.phase==="final" ? "-" : myRank();
   $("gradeBox").classList.add("hidden");
+  finishQuestion(null, true);
+}
+function finishQuestion(ansHtml, keepAns){
+  if(S.cur.done) return;
+  S.cur.done = true;
+  stopTimers();
+  if(!keepAns){ $("ansBox").innerHTML = ansHtml; $("ansBox").classList.remove("hidden"); }
+  $("buzzBtn").disabled = true;
   $("nextBox").classList.remove("hidden");
   $("nextBtn").textContent = (S.qi+1 >= S.curSet.length) ? "Finish round" : "Next question";
   $("nextBtn").focus();
 }
 function deadQuestion(){
   if(S.cur.done) return;
-  S.cur.done = true;
-  clearInterval(S.timer); clearInterval(S.clockTimer);
   S.stats.asked++; S.stats.dead++;
   var t = S.cur.q.topic; S.stats.topics[t] = S.stats.topics[t] || {a:0,r:0}; S.stats.topics[t].a++;
-  $("buzzBtn").disabled = true;
-  $("ansBox").innerHTML = "<b>Answer:</b> " + S.cur.q.a + "<br><span class='small'>No buzz - question is dead (0 points).</span>";
-  $("ansBox").classList.remove("hidden");
-  $("nextBox").classList.remove("hidden");
-  $("nextBtn").textContent = (S.qi+1 >= S.curSet.length) ? "Finish round" : "Next question";
+  finishQuestion("<b>Answer:</b> " + S.cur.q.a + "<br><span class='small'>No conversion - question is dead (0 points).</span>");
 }
 function standingsTable(cutLine){
   var st = standings();
@@ -263,18 +347,19 @@ function standingsTable(cutLine){
   for(var i=0;i<st.length;i++){
     h += "<tr class='"+(st[i].me?"me":"")+(cutLine && i===5?" cut":"")+"'><td>"+(i+1)+"</td><td>"+st[i].name+"</td><td>"+st[i].total+"</td></tr>";
   }
-  return h + "</table><div class='small'>Gold line = qualification cut (top 6 of 12 advance / top half).</div>";
+  return h + "</table><div class='small'>Gold line = qualification cut (top 6 of 12 advance / top half). Rival scores are earned live, question by question.</div>";
 }
 function endRound(){
-  clearInterval(S.timer); clearInterval(S.clockTimer);
+  stopTimers();
   $("play").classList.add("hidden");
-  S.totalScore += S.roundScore;
-  S.rounds.push({phase:S.phase, n:S.round, score:S.roundScore, right:S.roundRight});
-  S.rivals.forEach(function(r){ if(S.phase==="prelim"){ var s = rivalRound(r); r.total += s; r.rounds.push(s); } });
+  var rs = S.roundScore, rr = S.roundRight;
+  S.totalScore += rs;
+  S.rounds.push({phase:S.phase, n:S.round, score:rs, right:rr});
+  S.roundScore = 0;
   var h = "";
   if(S.phase === "prelim"){
     h += "<div class='card'><h2 style='margin-top:0'>"+(S.fmt==="single" ? "Round complete" : "Prelim Round "+S.round+" complete")+"</h2>";
-    h += "<p>Your round score: <b>"+S.roundScore+"</b> &nbsp;·&nbsp; Correct: "+S.roundRight+"/30 &nbsp;·&nbsp; Cumulative: <b>"+S.totalScore+"</b> &nbsp;·&nbsp; Rank: <b>"+myRank()+" of 12</b></p>";
+    h += "<p>Your round score: <b>"+rs+"</b> &nbsp;·&nbsp; Correct: "+rr+"/30 &nbsp;·&nbsp; Cumulative: <b>"+S.totalScore+"</b> &nbsp;·&nbsp; Rank: <b>"+myRank()+" of 12</b></p>";
     h += standingsTable(true);
     var done = (S.fmt==="single") || S.round >= 3;
     if(!done){ h += "<div style='margin-top:14px'><button class='primary' id='contBtn' style='width:100%'>Start Prelim Round "+(S.round+1)+"</button></div>"; }
@@ -291,9 +376,8 @@ function endRound(){
     var fb = $("finalBtn"); if(fb) fb.onclick = function(){ S.phase="final"; S.round=0; startRound(); };
     var rb = $("reportBtn"); if(rb) rb.onclick = function(){ endTournament(); };
   } else {
-    S.finalScore = S.roundScore;
-    var adv = standings().filter(function(x){return true});
-    h += "<div class='card'><h2 style='margin-top:0'>Final round complete</h2><p>Your final-round score: <b>"+S.finalScore+"</b> · Correct: "+S.roundRight+"/30</p></div>";
+    S.finalScore = rs;
+    h += "<div class='card'><h2 style='margin-top:0'>Final round complete</h2><p>Your final-round score: <b>"+S.finalScore+"</b> · Correct: "+rr+"/30</p></div>";
     $("breakBox").innerHTML = h; $("breakBox").classList.remove("hidden");
     endTournament();
   }
@@ -308,7 +392,7 @@ function endTournament(){
   h += "<table><tr><th>Stage</th><th>Score</th><th>Correct</th></tr>";
   S.rounds.forEach(function(r){ h += "<tr><td>"+(r.phase==="final" ? "Final" : "Prelim "+r.n)+"</td><td>"+r.score+"</td><td>"+r.right+"/30</td></tr>"; });
   h += "</table>";
-  h += "<p>Questions: "+st.asked+" · Correct: "+st.right+" · Wrong buzzes: "+st.wrong+" · Dead (no buzz): "+st.dead+" · Accuracy: <b>"+acc+"%</b></p>";
+  h += "<p>Questions: "+st.asked+" · Correct: "+st.right+" · Wrong buzzes: "+st.wrong+" · Dead (no conversion): "+st.dead+" · Taken by the field: "+st.taken+" · Rebounds lost: "+st.rebounds+" · Accuracy: <b>"+acc+"%</b></p>";
   h += "<p>Buzz depth on correct answers - Power (first third): "+st.buckets.power+" · Mid: "+st.buckets.mid+" · Late: "+st.buckets.late+" · End window: "+st.buckets.end+" · Average buzz point: <b>"+avgBuzz+"%</b> through the question</p>";
   var topics = Object.keys(st.topics).map(function(t){return {t:t, a:st.topics[t].a, r:st.topics[t].r}}).filter(function(x){return x.a>=3}).sort(function(a,b){return (a.r/a.a)-(b.r/b.a)});
   if(topics.length){
@@ -316,7 +400,7 @@ function endTournament(){
     h += "<p><b>Strongest topics:</b> "+topics.slice(-3).reverse().map(function(x){return x.t+" ("+x.r+"/"+x.a+")"}).join(" · ")+"</p>";
   }
   h += "<div class='row'><button class='primary' id='againBtn'>Run another tournament</button><button id='csvBtn'>Download report (CSV)</button></div>";
-  h += "<div class='small' style='margin-top:10px'>The rival field is a practice model. On Nov 21-22 the real measure is the top half of the actual room; this simulator trains the pacing, buzz discipline, and bounce-back that get you there.</div>";
+  h += "<div class='small' style='margin-top:10px'>The rival field is a practice model that buzzes live, question by question. On Nov 21-22 the real measure is the top half of the actual room; this simulator trains the pacing, buzz discipline, and bounce-back that get you there.</div>";
   h += "</div>";
   $("reportBox").innerHTML = h; $("reportBox").classList.remove("hidden");
   try{
@@ -326,7 +410,7 @@ function endTournament(){
   }catch(e){}
   $("againBtn").onclick = function(){ $("reportBox").classList.add("hidden"); $("setup").classList.remove("hidden"); renderHist(); };
   $("csvBtn").onclick = function(){
-    var rows = [["stage","score","correct"],["total",S.totalScore,""],["accuracy_pct",acc,""],["avg_buzz_pct",avgBuzz,""]];
+    var rows = [["stage","score","correct"],["total",S.totalScore,""],["accuracy_pct",acc,""],["avg_buzz_pct",avgBuzz,""],["taken_by_field",S.stats.taken,""],["rebounds_lost",S.stats.rebounds,""]];
     S.rounds.forEach(function(r){ rows.push([(r.phase==="final"?"Final":"Prelim "+r.n), r.score, r.right+"/30"]); });
     var csv = rows.map(function(r){return r.join(",")}).join("\n");
     var a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.download = "regional-sim-report.csv"; a.click();
