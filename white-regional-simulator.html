@@ -124,9 +124,9 @@ function clamp(x,lo,hi){return Math.max(lo,Math.min(hi,x))}
 function gauss(){var u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
 function bandPts(depth){return depth<=0.33?15:(depth<=0.66?12:10)}
 var ROOMS = {
-  typical:{know:0.38, acc:0.82, depthMean:0.54, depthSd:0.20, skillKnow:0.09, skillDepth:0.10},
-  strong:{know:0.50, acc:0.86, depthMean:0.47, depthSd:0.19, skillKnow:0.10, skillDepth:0.11},
-  champ:{know:0.62, acc:0.90, depthMean:0.41, depthSd:0.17, skillKnow:0.11, skillDepth:0.12}
+  typical:{know:0.38, acc:0.82, buzzWords:17, buzzSd:5.5, skillKnow:0.09, skillWords:3},
+  strong:{know:0.50, acc:0.86, buzzWords:14, buzzSd:5.5, skillKnow:0.10, skillWords:3},
+  champ:{know:0.62, acc:0.90, buzzWords:11.5, buzzSd:5.0, skillKnow:0.11, skillWords:3}
 };
 var S = null, QID = 0;
 function newTournament(){
@@ -142,14 +142,16 @@ function newTournament(){
     cur:null, timer:null, clockTimer:null};
 }
 function drawQuestions(n, pool){ var out=[]; while(out.length<n && pool.length){ out.push(pool.pop()); } return out; }
-function genEvents(){
+function genEvents(totalWords){
   var cfg = S.cfg, evs = [];
+  var lo = Math.min(8, Math.max(3, totalWords - 2));
   S.rivals.forEach(function(r){
     var knowP = clamp(cfg.know + r.skill*cfg.skillKnow, 0.03, 0.95);
     if(Math.random() < knowP){
-      var depth = clamp(cfg.depthMean - r.skill*cfg.skillDepth + gauss()*cfg.depthSd, 0.04, 0.98);
+      var bw = Math.round(cfg.buzzWords - r.skill*cfg.skillWords + gauss()*cfg.buzzSd);
+      bw = clamp(bw, lo, Math.max(lo, totalWords - 1));
       var accP = clamp(cfg.acc + r.skill*0.05, 0.4, 0.98);
-      evs.push({rival:r, depth:depth, correct:Math.random() < accP, used:false});
+      evs.push({rival:r, depth:bw/totalWords, correct:Math.random() < accP, used:false});
     }
   });
   evs.sort(function(a,b){return a.depth-b.depth});
@@ -205,8 +207,9 @@ function nextQuestion(){
   if(S.qi >= S.curSet.length){ endRound(); return; }
   var q = S.curSet[S.qi];
   QID++;
-  S.cur = {qid:QID, q:q, words:q.q.split(/\s+/), shown:0, buzzed:false, locked:false, done:false, depth:0, clock:45,
-           events:(S.phase==="final" ? [] : genEvents()), evIdx:0, readDone:false, endWindow:false};
+  var words = q.q.split(/\s+/);
+  S.cur = {qid:QID, q:q, words:words, shown:0, buzzed:false, locked:false, done:false, depth:0, clock:45,
+           events:(S.phase==="final" ? [] : genEvents(words.length)), evIdx:0, readDone:false, endWindow:false};
   $("hudRound").textContent = (S.phase==="final" ? "Final" : "Prelim Round "+S.round);
   $("hudQ").textContent = "Question "+(S.qi+1)+" of "+S.curSet.length;
   $("hudScore").textContent = S.totalScore + S.roundScore;
