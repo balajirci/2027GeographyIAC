@@ -498,4 +498,96 @@ document.querySelectorAll('.tabbtn').forEach(function(b){b.addEventListener('cli
 })});
 </script>
 
+<!-- ABHINAV-FIREBASE-SYNC v1 -->
+<script>
+(function(){
+  if(window.__abFbSync){ return; }
+  window.__abFbSync = true;
+  var K = 'c0cc9f86f1bc3f34b61674d8';
+  var CFG = {apiKey: 'AIzaSyBJ46ycJ-qFky2mChCI24Fxc7_dGWMDtdY', authDomain: 'abhinav-study-log.firebaseapp.com', projectId: 'abhinav-study-log', storageBucket: 'abhinav-study-log.firebasestorage.app', messagingSenderId: '244469248857', appId: '1:244469248857:web:1b4f62877033a327b15248'};
+  var file = (location.pathname.split('/').pop() || 'index').toLowerCase();
+  var path = location.pathname.toLowerCase();
+  function subject(){
+    if(file.indexOf('geography') >= 0){ return 'Geography'; }
+    if(file.indexOf('history') >= 0){ return 'History'; }
+    if(file.indexOf('science') >= 0){ return 'Science'; }
+    if(path.indexOf('championship-exams') >= 0 || file.indexOf('exam') >= 0){ return 'Exams'; }
+    return 'Other';
+  }
+  function kind(){
+    if(file.indexOf('simulator') >= 0){ return 'simulator'; }
+    if(path.indexOf('championship-exams') >= 0 || file.indexOf('exam') >= 0){ return 'exam'; }
+    if(file.indexOf('trainer') >= 0 || file.indexOf('coverage') >= 0){ return 'trainer'; }
+    return 'other';
+  }
+  function today(){
+    var d = new Date(), m = ('0'+(d.getMonth()+1)).slice(-2), dd = ('0'+d.getDate()).slice(-2);
+    return d.getFullYear()+'-'+m+'-'+dd;
+  }
+  var db = null, fsMod = null, loading = null;
+  function ensureDb(){
+    if(db){ return Promise.resolve(true); }
+    if(loading){ return loading; }
+    loading = import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js').then(function(appMod){
+      return import('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js').then(function(fs){
+        var app;
+        try { app = appMod.getApp(); } catch(e) { app = appMod.initializeApp(CFG); }
+        fsMod = fs;
+        db = fs.getFirestore(app);
+        return true;
+      });
+    }).catch(function(){ loading = null; return false; });
+    return loading;
+  }
+  function writeDoc(coll, doc, onFail){
+    ensureDb().then(function(ok){
+      if(!ok || !db || !fsMod){ if(onFail){ onFail(); } return; }
+      fsMod.addDoc(fsMod.collection(db, coll), doc).catch(function(){ if(onFail){ onFail(); } });
+    }).catch(function(){ if(onFail){ onFail(); } });
+  }
+  // Active-time accumulation with the same rule as the local tracker:
+  // counts only while the tab is visible and there was an interaction in the last 90 seconds.
+  var pending = 0, last = Date.now(), lastAct = Date.now();
+  ['pointerdown','keydown','touchstart','wheel','scroll'].forEach(function(ev){
+    document.addEventListener(ev, function(){ lastAct = Date.now(); }, {passive: true});
+  });
+  function tick(){
+    var now = Date.now(), el = Math.round((now-last)/1000);
+    last = now;
+    if(document.hidden){ return; }
+    if(now - lastAct > 90000){ return; }
+    if(el > 0 && el <= 15){ pending += el; }
+  }
+  function flush(minSecs){
+    if(pending < minSecs){ return; }
+    var secs = pending;
+    pending = 0;
+    writeDoc('sessions', {k: K, page: file, subject: subject(), kind: kind(), secs: secs, date: today(), ts: Date.now()},
+             function(){ pending += secs; });
+  }
+  setInterval(function(){ tick(); if(pending >= 60){ flush(60); } }, 5000);
+  document.addEventListener('visibilitychange', function(){
+    if(document.hidden){ tick(); flush(5); }
+    last = Date.now();
+  });
+  window.addEventListener('pagehide', function(){ tick(); flush(5); });
+  // Simulator run reporting: the simulator engine calls window.abSimRun(run) when it builds its report.
+  var lastRunSig = '', lastRunAt = 0;
+  window.abSimRun = function(run){
+    try {
+      if(!run || typeof run.score !== 'number' || !run.asked){ return; }
+      var sig = [file, run.score, run.finalScore, run.accuracyPct, run.correct, run.asked].join('|');
+      var now = Date.now();
+      if(sig === lastRunSig && now - lastRunAt < 120000){ return; }
+      lastRunSig = sig; lastRunAt = now;
+      var doc = {k: K, page: file, subject: subject(), date: today(), ts: now,
+                 score: run.score, accuracyPct: run.accuracyPct, correct: run.correct,
+                 wrongBuzzes: run.wrongBuzzes, takenByField: run.takenByField, missed: run.missed};
+      if(run.finalScore != null){ doc.finalScore = run.finalScore; }
+      if(run.qualified != null){ doc.qualified = run.qualified; }
+      writeDoc('simRuns', doc, function(){ lastRunSig = ''; });
+    } catch(e) {}
+  };
+})();
+</script>
 </html>
