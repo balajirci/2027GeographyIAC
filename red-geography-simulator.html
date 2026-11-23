@@ -72,6 +72,13 @@ a{color:var(--acc)}
 <option value="210" selected>Normal</option>
 <option value="120">Fast</option>
 </select>
+<label>Question delivery</label>
+<select id="delivery">
+<option value="read" selected>Read on screen (word by word)</option>
+<option value="listenread">Listen + read along</option>
+<option value="listen">Listen only (text hidden until you buzz)</option>
+</select>
+<div class="small">Listen only is the tournament test: the question is spoken once, and the text appears only after you buzz or the answer is revealed. Buzzing stops the voice. Best with a headset.</div>
 <div style="margin-top:14px"><button class="primary" id="startBtn" style="width:100%">Start</button></div>
 <div id="histBox" class="hist" style="margin-top:14px"></div>
 </div>
@@ -129,13 +136,34 @@ var ROOMS = {
   champ:{know:0.62, acc:0.90, buzzWords:11.5, buzzSd:5.0, skillKnow:0.11, skillWords:3}
 };
 var S = null, QID = 0;
+var VOICE=null;
+function pickVoice(){ try{ var vs=window.speechSynthesis?speechSynthesis.getVoices():[]; if(!vs||!vs.length) return null; var p=vs.filter(function(v){return /en[-_]US/i.test(v.lang)&&/google/i.test(v.name)}); if(p.length) return p[0]; p=vs.filter(function(v){return /^en[-_]US/i.test(v.lang)}); if(p.length) return p[0]; p=vs.filter(function(v){return /^en/i.test(v.lang)}); return p.length?p[0]:vs[0]; }catch(e){ return null; } }
+if(window.speechSynthesis){ try{ speechSynthesis.onvoiceschanged=function(){ VOICE=pickVoice(); }; }catch(e){} VOICE=pickVoice(); }
+function stopVoice(){ try{ if(window.speechSynthesis) speechSynthesis.cancel(); }catch(e){} }
+function speakQ(text){
+  if(!S || (S.delivery!=="listen" && S.delivery!=="listenread")) return;
+  if(!window.speechSynthesis) return;
+  stopVoice();
+  var clean=(text||"").replace(/\[\[[^\]]*\]\]/g,"").replace(/\s+/g," ").trim();
+  if(!clean) return;
+  var u=new SpeechSynthesisUtterance(clean);
+  if(!VOICE) VOICE=pickVoice();
+  if(VOICE) u.voice=VOICE;
+  var sp=parseInt($("speed").value,10);
+  u.rate = sp>=300?0.92:(sp<=120?1.15:1.02);
+  try{ speechSynthesis.speak(u); }catch(e){}
+}
+function revealText(full){
+  if(!S || S.delivery!=="listen" || !S.cur) return;
+  $("qText").textContent = full ? S.cur.words.join(" ") : S.cur.words.slice(0,S.cur.shown).join(" ");
+}
 function newTournament(){
   var cfg = ROOMS[$("room").value];
   var rivals = [];
   for(var i=0;i<11;i++){ rivals.push({name:"Player "+(i+2), skill:(Math.random()*2-1), total:0}); }
   var main = shuffle(BANK.filter(function(q){return !q.f}));
   var fin  = shuffle(BANK.filter(function(q){return q.f}));
-  return {fmt:$("fmt").value, room:$("room").value, cfg:cfg, rivals:rivals,
+  return {fmt:$("fmt").value, delivery:$("delivery").value, room:$("room").value, cfg:cfg, rivals:rivals,
     mainPool:main, finPool:fin, round:0, phase:"prelim", totalScore:0,
     rounds:[], qualified:null, finalScore:null,
     stats:{asked:0,right:0,wrong:0,dead:0,taken:0,rebounds:0,buzzSum:0,buzzN:0,buckets:{power:0,mid:0,late:0,end:0},topics:{}},
@@ -192,7 +220,7 @@ function startTimers(){
     if(ev && frac >= ev.depth){ resolveRivalEvent(ev); return; }
     if(S.cur.shown < S.cur.words.length){
       S.cur.shown++;
-      $("qText").textContent = S.cur.words.slice(0,S.cur.shown).join(" ");
+      if(S.delivery!=="listen"){ $("qText").textContent = S.cur.words.slice(0,S.cur.shown).join(" "); }
       $("readBar").style.width = (100*S.cur.shown/S.cur.words.length)+"%";
     } else {
       clearInterval(S.timer); S.timer=null;
@@ -220,14 +248,16 @@ function nextQuestion(){
   $("hudScore").textContent = S.totalScore + S.roundScore;
   $("hudRank").textContent = S.phase==="final" ? "-" : myRank();
   $("qMeta").textContent = q.topic + "  ·  " + q.id;
-  $("qText").textContent = "";
+  $("qText").textContent = (S.delivery==="listen") ? "Listening - the question is being read aloud. Buzz when you know it." : "";
   $("fieldLine").classList.add("hidden"); $("fieldLine").textContent = "";
   $("ansBox").classList.add("hidden"); $("entryBox").classList.add("hidden");
   $("gradeBox").classList.add("hidden"); $("nextBox").classList.add("hidden");
   $("ansInput").value = "";
   $("buzzBtn").disabled = false; $("buzzBtn").textContent = "BUZZ (Space)";
   $("readBar").style.width = "0%"; $("clockBar").style.width = "100%"; $("hudClock").textContent = "45";
+  stopVoice();
   startTimers();
+  speakQ(q.q);
 }
 function resolveRivalEvent(ev){
   var cur = S.cur, qid = cur.qid;
@@ -274,7 +304,7 @@ function buzz(){
   if(!S.cur || S.cur.buzzed || S.cur.done) return;
   S.cur.buzzed = true;
   S.cur.depth = S.cur.words.length ? S.cur.shown/S.cur.words.length : 1;
-  stopTimers();
+  stopTimers(); stopVoice(); revealText(false);
   $("buzzBtn").disabled = true;
   $("entryBox").classList.remove("hidden");
   $("ansInput").focus();
@@ -288,6 +318,7 @@ function lockAnswer(aloud){
   var q = S.cur.q;
   $("ansBox").innerHTML = "<b>Answer:</b> " + q.a + (S.cur.typed ? "<br><span class='small'>You typed: " + S.cur.typed.replace(/</g,"&lt;") + "</span>" : "") + moreHtml(q);
   $("ansBox").classList.remove("hidden");
+  revealText(true);
   var hint = "";
   if(S.cur.typed){
     var na = norm(q.a), nt = norm(S.cur.typed);
@@ -342,6 +373,7 @@ function finishQuestion(ansHtml, keepAns){
   if(S.cur.done) return;
   S.cur.done = true;
   stopTimers();
+  stopVoice(); revealText(true);
   if(!keepAns){ $("ansBox").innerHTML = ansHtml + moreHtml(S.cur.q); $("ansBox").classList.remove("hidden"); }
   $("buzzBtn").disabled = true;
   $("nextBox").classList.remove("hidden");
@@ -444,7 +476,7 @@ function renderHist(){
     $("histBox").innerHTML = "<b>Recent tournaments:</b> " + hist.slice(0,5).map(function(x){ return x.d+" - "+x.fmt+", "+x.room+" room, prelim total "+x.total+(x.qualified===true?", qualified":x.qualified===false?", not qualified":"")+(x.final!=null?", final "+x.final:"")+" ("+x.acc+"% acc)"; }).join(" &nbsp;·&nbsp; ");
   }catch(e){}
 }
-$("startBtn").onclick = function(){ S = newTournament(); if(S.fmt==="final"){ S.phase="final"; } S.round=0; startRound(); };
+$("startBtn").onclick = function(){ if(window.speechSynthesis){ try{ speechSynthesis.speak(new SpeechSynthesisUtterance("")); }catch(e){} } S = newTournament(); if(S.fmt==="final"){ S.phase="final"; } S.round=0; startRound(); };
 $("buzzBtn").onclick = buzz;
 $("lockTyped").onclick = function(){ lockAnswer(false); };
 $("lockAloud").onclick = function(){ lockAnswer(true); };
